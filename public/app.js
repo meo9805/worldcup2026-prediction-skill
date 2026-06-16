@@ -4,6 +4,7 @@ let currentPrediction = null;
 let mode = "batch";
 let hasServerApiKey = false;
 let didAutoGenerate = false;
+let fixtureSources = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -25,15 +26,25 @@ function setBusy(button, busy, label) {
   if (window.lucide) window.lucide.createIcons();
 }
 
-async function postJson(url, body = {}) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "请求失败");
-  return data;
+async function postJson(url, body = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "请求失败");
+    return data;
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("请求超时：已停止等待，请刷新赛程或关闭自动抓取情报重试。");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function legLabel(value) {
@@ -82,7 +93,10 @@ function renderFixtures() {
       </td>
       <td>${fixture.group}</td>
       <td><span class="status ${fixture.status}">${statusLabel(fixture.status, fixture)}</span></td>
-      <td>${fixture.city || fixture.stadium || "-"}</td>
+      <td>
+        <strong>${fixture.city || fixture.stadium || "-"}</strong>
+        <span>${(fixture.sources || []).join("、") || "未知来源"}</span>
+      </td>
     `;
     tr.addEventListener("click", (event) => {
       if (event.target.matches("input")) return;
@@ -99,15 +113,20 @@ async function loadFixtures() {
   const button = $("refreshFixtures");
   try {
     setBusy(button, true, "刷新中...");
+    $("fixtureMeta").textContent = "正在尝试多个赛程来源...";
     const data = await postJson("/api/fixtures", {
       date: $("fixtureDate").value,
       window: Number($("fixtureWindow").value),
       includeFinished: $("includeFinished").checked
-    });
+    }, 18000);
     fixtures = data.fixtures || [];
-    $("fixtureMeta").textContent = `已读取 ${fixtures.length} 场 · ${new Date(data.fetchedAt).toLocaleTimeString()}`;
+    fixtureSources = data.sources || [];
+    const okSources = fixtureSources.filter((source) => source.ok).map((source) => source.label).join("、") || "无";
+    const failed = fixtureSources.filter((source) => !source.ok).length;
+    $("fixtureMeta").textContent = `已读取 ${fixtures.length} 场 · 来源：${okSources}${failed ? ` · ${failed} 个来源失败` : ""}`;
     renderFixtures();
   } catch (error) {
+    $("fixtureMeta").textContent = `读取失败：${error.message}`;
     showToast(error.message);
   } finally {
     setBusy(button, false);
@@ -135,10 +154,13 @@ async function generateBoard() {
     if (!matches.length) throw new Error("没有选中可预测比赛。已完赛和进行中默认不会纳入预测。");
     const limited = mode === "single" ? matches.slice(0, 1) : matches.slice(0, 10);
     setBusy(button, true, $("autoIntel").checked ? "抓情报并生成..." : "生成中...");
+    $("outputMeta").textContent = $("autoIntel").checked
+      ? "正在并发抓取多来源情报，并生成整表..."
+      : "正在基于赛程生成整表...";
     const data = await postJson("/api/predict-fixtures", {
       ...payloadBase(),
       matches: limited
-    });
+    }, $("autoIntel").checked ? 65000 : 45000);
     predictions = normalizePredictions(data);
     renderPredictions(predictions);
   } catch (error) {
@@ -153,6 +175,10 @@ function predictionCard(prediction, index) {
   const probs = prediction.modelAdjusted || {};
   const safe = prediction.safestDirection || {};
   const parlay = prediction.parlaySafety || {};
+  const sources = prediction.dataSources || [];
+  const sourceText = sources.length
+    ? sources.map((source) => `${source.ok ? "✓" : "×"}${source.label}`).join(" ")
+    : "来源未标注";
   const div = document.createElement("article");
   div.className = `prediction-card grade-${String(parlay.grade || "").toLowerCase()}`;
   div.tabIndex = 0;
@@ -175,6 +201,7 @@ function predictionCard(prediction, index) {
       <div><span>2/3/4关</span><strong>${legLabel(parlay.twoLeg)} / ${legLabel(parlay.threeLeg)} / ${legLabel(parlay.fourLeg)}</strong></div>
     </div>
     <p>${prediction.analysis || safe.reason || ""}</p>
+    <div class="source-line">来源：${sourceText}</div>
     <ul>${(prediction.riskFlags || []).slice(0, 4).map((item) => `<li>${item}</li>`).join("")}</ul>
   `;
   div.addEventListener("click", () => {

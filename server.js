@@ -83,6 +83,39 @@ const MONTHS = {
   December: "12"
 };
 
+const LOCAL_FIXTURE_SNAPSHOT = [
+  ["2026-06-15", "Monday 15 June 2026", "", "finished", "F", "Sweden", "Tunisia", 5, 1, "Monterrey Stadium", "Monterrey", "400021474"],
+  ["2026-06-15", "Monday 15 June 2026", "", "finished", "H", "Spain", "Cabo Verde", 0, 0, "Atlanta Stadium", "Atlanta", "400021482"],
+  ["2026-06-15", "Monday 15 June 2026", "", "finished", "G", "Belgium", "Egypt", 1, 1, "Seattle Stadium", "Seattle", "400021478"],
+  ["2026-06-15", "Monday 15 June 2026", "", "finished", "H", "Saudi Arabia", "Uruguay", 1, 1, "Miami Stadium", "Miami", "400021486"],
+  ["2026-06-16", "Tuesday 16 June 2026", "01:00", "scheduled", "G", "IR Iran", "New Zealand", null, null, "Los Angeles Stadium", "Los Angeles", "400021476"],
+  ["2026-06-16", "Tuesday 16 June 2026", "19:00", "scheduled", "I", "France", "Senegal", null, null, "New York/New Jersey Stadium", "New Jersey", "400021490"],
+  ["2026-06-16", "Tuesday 16 June 2026", "22:00", "scheduled", "I", "Iraq", "Norway", null, null, "Boston Stadium", "Boston", "400021488"],
+  ["2026-06-17", "Wednesday 17 June 2026", "01:00", "scheduled", "J", "Argentina", "Algeria", null, null, "Kansas City Stadium", "Kansas City", "400021496"],
+  ["2026-06-17", "Wednesday 17 June 2026", "04:00", "scheduled", "J", "Austria", "Jordan", null, null, "San Francisco Bay Area Stadium", "San Francisco Bay Area", "400021498"],
+  ["2026-06-17", "Wednesday 17 June 2026", "17:00", "scheduled", "K", "Portugal", "Congo DR", null, null, "Houston Stadium", "Houston", "400021502"],
+  ["2026-06-17", "Wednesday 17 June 2026", "20:00", "scheduled", "L", "England", "Croatia", null, null, "Dallas Stadium", "Dallas", "400021507"],
+  ["2026-06-17", "Wednesday 17 June 2026", "23:00", "scheduled", "L", "Ghana", "Panama", null, null, "Toronto Stadium", "Toronto", "400021510"]
+].map(([date, dateLabel, time, status, group, teamA, teamB, scoreA, scoreB, stadium, city, id]) => ({
+  id,
+  date,
+  dateLabel,
+  time,
+  status,
+  group,
+  stage: "小组赛",
+  teamA,
+  teamB,
+  teamAZh: TEAM_ZH[teamA] || teamA,
+  teamBZh: TEAM_ZH[teamB] || teamB,
+  scoreA,
+  scoreB,
+  stadium,
+  city,
+  sourceUrl: `https://www.fifa.com/en/match-centre/match/17/285023/289273/${id}`,
+  sources: ["内置赛程快照"]
+}));
+
 function send(res, status, body, type = "application/json; charset=utf-8") {
   const payload = Buffer.isBuffer(body)
     ? body
@@ -143,6 +176,16 @@ async function fetchText(url, timeoutMs = 18000) {
   }
 }
 
+async function fetchTextResult(label, url, timeoutMs = 8000) {
+  const startedAt = Date.now();
+  try {
+    const text = await fetchText(url, timeoutMs);
+    return { label, ok: true, url, ms: Date.now() - startedAt, text };
+  } catch (error) {
+    return { label, ok: false, url, ms: Date.now() - startedAt, error: error.message };
+  }
+}
+
 function toIsoDate(label) {
   const match = label.match(/^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
   if (!match) return "";
@@ -153,7 +196,7 @@ function stripMarkdownImages(text) {
   return text.replace(/!\[[^\]]*?\]\([^)]+?\)/g, "");
 }
 
-function parseFixtureLabel(raw, dateLabel, url) {
+function parseFixtureLabel(raw, dateLabel, url, sourceLabel = "FIFA官方赛程") {
   const label = raw.replace(/\s+/g, " ").trim();
   const meta = label.match(/(.+?)\s+First Stage·\s+Group\s+([A-L])·\s+(.+?)\(([^)]+)\)$/);
   if (!meta) return null;
@@ -208,12 +251,12 @@ function parseFixtureLabel(raw, dateLabel, url) {
     scoreB,
     stadium,
     city,
-    sourceUrl: url
+    sourceUrl: url,
+    sources: [sourceLabel]
   };
 }
 
-async function loadFixtures() {
-  const markdown = stripMarkdownImages(await fetchText(readerUrl(FIFA_FIXTURES_URL), 22000));
+async function loadFixturesFromMarkdown(markdown, sourceLabel) {
   const lines = markdown.split(/\r?\n/);
   const fixtures = [];
   let dateLabel = "";
@@ -230,11 +273,55 @@ async function loadFixtures() {
 
     let match;
     while ((match = linkPattern.exec(trimmed))) {
-      const fixture = parseFixtureLabel(match[1], dateLabel, match[2]);
+      const fixture = parseFixtureLabel(match[1], dateLabel, match[2], sourceLabel);
       if (fixture) fixtures.push(fixture);
     }
   }
   return fixtures;
+}
+
+function mergeFixtures(...lists) {
+  const map = new Map();
+  for (const list of lists) {
+    for (const fixture of list || []) {
+      const existing = map.get(fixture.id);
+      if (!existing) {
+        map.set(fixture.id, { ...fixture, sources: [...new Set(fixture.sources || [])] });
+      } else {
+        existing.sources = [...new Set([...(existing.sources || []), ...(fixture.sources || [])])];
+        if (existing.status === "scheduled" && fixture.status !== "scheduled") {
+          Object.assign(existing, fixture, { sources: existing.sources });
+        }
+      }
+    }
+  }
+  return [...map.values()].sort((a, b) => `${a.date} ${a.time || "99:99"}`.localeCompare(`${b.date} ${b.time || "99:99"}`));
+}
+
+async function loadFixtures({ date } = {}) {
+  const urls = [
+    { label: "FIFA官方赛程", url: readerUrl(FIFA_FIXTURES_URL) },
+    { label: "FIFA日期赛程", url: readerUrl(`${FIFA_FIXTURES_URL}?date=${date || "2026-06-16"}`) }
+  ];
+  const results = await Promise.all(urls.map((item) => fetchTextResult(item.label, item.url, 9000)));
+  const parsedLists = [];
+  for (const result of results) {
+    if (result.ok) {
+      parsedLists.push(await loadFixturesFromMarkdown(stripMarkdownImages(result.text), result.label));
+    }
+  }
+
+  const primary = mergeFixtures(...parsedLists);
+  const fallbackUsed = primary.length === 0;
+  const fixtures = fallbackUsed ? mergeFixtures(LOCAL_FIXTURE_SNAPSHOT) : mergeFixtures(primary, LOCAL_FIXTURE_SNAPSHOT);
+  const sources = results.map(({ label, ok, url, ms, error }) => ({ label, ok, url, ms, error }));
+  sources.push({
+    label: "内置赛程快照",
+    ok: true,
+    used: fallbackUsed ? "primary-fallback" : "backup-merged",
+    count: LOCAL_FIXTURE_SNAPSHOT.length
+  });
+  return { fixtures, sources };
 }
 
 function filterFixtures(fixtures, { date, window = 1, includeFinished = false }) {
@@ -247,11 +334,8 @@ function filterFixtures(fixtures, { date, window = 1, includeFinished = false })
   });
 }
 
-async function fetchMatchIntelligence(match) {
-  if (!match?.sourceUrl) return "";
-  try {
-    const text = await fetchText(readerUrl(match.sourceUrl), 16000);
-    return text
+function compactIntelligenceText(text, match) {
+  return text
       .replace(/\n{3,}/g, "\n\n")
       .split("\n")
       .filter((line) => {
@@ -263,9 +347,38 @@ async function fetchMatchIntelligence(match) {
       .slice(0, 80)
       .join("\n")
       .slice(0, 3500);
-  } catch (error) {
-    return `自动情报抓取失败：${error.message}`;
-  }
+}
+
+async function fetchMatchIntelligence(match) {
+  const sources = [
+    {
+      label: "FIFA单场页",
+      url: match?.sourceUrl ? readerUrl(match.sourceUrl) : "",
+      timeoutMs: 7000
+    },
+    {
+      label: "FIFA赛程行",
+      inline: describeFixtureSummary(match)
+    }
+  ];
+
+  const results = await Promise.all(sources.map(async (source) => {
+    if (source.inline) return { label: source.label, ok: true, text: source.inline };
+    if (!source.url) return { label: source.label, ok: false, error: "missing url" };
+    return fetchTextResult(source.label, source.url, source.timeoutMs);
+  }));
+
+  const sourceSummary = results.map(({ label, ok, url, ms, error }) => ({ label, ok, url, ms, error }));
+  const text = results
+    .filter((item) => item.ok && item.text)
+    .map((item) => `【${item.label}】\n${item.label === "FIFA单场页" ? compactIntelligenceText(item.text, match) : item.text}`)
+    .join("\n\n")
+    .slice(0, 4500);
+
+  return {
+    text: text || "自动情报抓取失败，必须按缺少首发/伤停/市场基线处理。",
+    sources: sourceSummary
+  };
 }
 
 function buildMatchPrompt(input, batch = false) {
@@ -285,6 +398,12 @@ function buildMatchPrompt(input, batch = false) {
     `${realtime}`;
 }
 
+function describeFixtureSummary(match) {
+  const score = match.status !== "scheduled" ? ` 比分：${match.scoreA ?? "-"}-${match.scoreB ?? "-"}。` : "";
+  const sources = match.sources?.length ? ` 来源：${match.sources.join("、")}。` : "";
+  return `${match.group}组 ${match.teamAZh || match.teamA} vs ${match.teamBZh || match.teamB}，${match.date} ${match.time || ""}，${match.stadium || ""}${match.city ? `(${match.city})` : ""}，状态 ${match.status}。${score}${sources}`;
+}
+
 function describeFixture(match, intelligence = "") {
   const base = `${match.group}组 ${match.teamAZh || match.teamA} vs ${match.teamBZh || match.teamB}，${match.stage || "小组赛"}，FIFA显示时间 ${match.date} ${match.time || ""}，地点 ${match.stadium || ""}${match.city ? `(${match.city})` : ""}，状态 ${match.status}。`;
   const score = match.status !== "scheduled" ? ` 当前/最终比分：${match.scoreA ?? "-"}-${match.scoreB ?? "-"}。` : "";
@@ -302,17 +421,22 @@ async function buildFixturePrompt(input) {
   }
 
   const withIntel = [];
+  const intelByMatch = [];
   for (const match of matches) {
-    const intelligence = input.autoIntel === false ? "" : await fetchMatchIntelligence(match);
-    withIntel.push(describeFixture(match, intelligence));
+    const intelligence = input.autoIntel === false
+      ? { text: "", sources: [{ label: "自动抓取情报", ok: false, error: "disabled" }] }
+      : await fetchMatchIntelligence(match);
+    intelByMatch.push({ id: match.id, sources: intelligence.sources || [] });
+    withIntel.push(describeFixture(match, intelligence.text));
   }
 
-  return `请基于以下 FIFA 官方赛程和自动抓取情报，逐场输出预测表。输出 {"predictions":[...]}，只输出合法 JSON，不要 markdown。\n\n` +
+  const prompt = `请基于以下 FIFA 官方赛程和自动抓取情报，逐场输出预测表。输出 {"predictions":[...]}，只输出合法 JSON，不要 markdown。\n\n` +
     `要求：\n` +
     `1. 如果首发/伤停/市场基线没有抓到，必须明确降置信或 PASS。\n` +
     `2. 已经开赛或完赛的比赛不要假装赛前预测，标记为复盘/跳过组合，不得纳入 2/3/4 关。\n` +
     `3. 重点输出 safestDirection、parlaySafety、passRecommended、riskFlags。\n\n` +
     withIntel.join("\n\n---\n\n");
+  return { prompt, intelByMatch };
 }
 
 async function callModel({ apiKey, endpoint, model, prompt }) {
@@ -451,11 +575,12 @@ async function handleApi(req, res) {
       return;
     }
     if (req.url === "/api/fixtures") {
-      const fixtures = await loadFixtures();
+      const loaded = await loadFixtures(body);
       send(res, 200, {
         source: FIFA_FIXTURES_URL,
         fetchedAt: new Date().toISOString(),
-        fixtures: filterFixtures(fixtures, body)
+        sources: loaded.sources,
+        fixtures: filterFixtures(loaded.fixtures, body)
       });
       return;
     }
@@ -466,9 +591,15 @@ async function handleApi(req, res) {
       return;
     }
     if (req.url === "/api/predict-fixtures") {
-      const prompt = await buildFixturePrompt(body);
+      const { prompt, intelByMatch } = await buildFixturePrompt(body);
       const prediction = await callModel({ ...body, prompt });
-      send(res, 200, { prediction });
+      if (Array.isArray(prediction?.predictions)) {
+        prediction.predictions = prediction.predictions.map((item, index) => ({
+          ...item,
+          dataSources: intelByMatch[index]?.sources || []
+        }));
+      }
+      send(res, 200, { prediction, dataSources: intelByMatch });
       return;
     }
     if (req.url === "/api/batch") {

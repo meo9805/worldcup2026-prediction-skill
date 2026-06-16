@@ -453,6 +453,13 @@ svg {
   margin-bottom: 10px;
 }
 
+.source-line {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 10px;
+}
+
 .prediction-card ul {
   display: flex;
   flex-wrap: wrap;
