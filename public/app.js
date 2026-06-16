@@ -1,4 +1,9 @@
+let fixtures = [];
+let predictions = [];
 let currentPrediction = null;
+let mode = "batch";
+let hasServerApiKey = false;
+let didAutoGenerate = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -20,7 +25,7 @@ function setBusy(button, busy, label) {
   if (window.lucide) window.lucide.createIcons();
 }
 
-async function postJson(url, body) {
+async function postJson(url, body = {}) {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -31,147 +36,173 @@ async function postJson(url, body) {
   return data;
 }
 
-function formPayload() {
-  const teamA = $("teamA").value.trim();
-  const teamB = $("teamB").value.trim();
-  if (!teamA || !teamB) throw new Error("请先填写两支队伍。");
-  return {
-    apiKey: $("apiKey").value.trim(),
-    model: $("model").value.trim() || "deepseek-chat",
-    stage: $("stage").value,
-    group: $("group").value.trim(),
-    kickoffBeijing: $("kickoff").value.trim(),
-    teamA,
-    teamB,
-    realtime: $("realtime").value.trim()
-  };
+function legLabel(value) {
+  return { core: "核心", helper: "辅助", avoid: "避开" }[value] || "-";
 }
 
-function pickPrediction(payload) {
-  if (payload?.prediction?.predictions?.[0]) return payload.prediction.predictions[0];
-  if (payload?.prediction?.match) return payload.prediction;
-  return payload?.prediction;
+function statusLabel(status, fixture) {
+  if (status === "finished") return `已完 ${fixture.scoreA}-${fixture.scoreB}`;
+  if (status === "live") return `进行中 ${fixture.scoreA}-${fixture.scoreB} ${fixture.time || ""}`;
+  return "未开赛";
 }
 
-function renderList(target, items, className) {
-  target.className = className;
-  target.innerHTML = "";
-  for (const item of items || []) {
-    const li = document.createElement("li");
-    li.textContent = typeof item === "string" ? item : JSON.stringify(item);
-    target.appendChild(li);
+function isPredictable(fixture) {
+  return fixture.status === "scheduled";
+}
+
+function selectedFixtures() {
+  const ids = [...document.querySelectorAll(".fixture-check:checked")].map((item) => item.value);
+  return fixtures.filter((fixture) => ids.includes(fixture.id));
+}
+
+function renderFixtures() {
+  const body = $("fixturesBody");
+  body.innerHTML = "";
+
+  if (!fixtures.length) {
+    body.innerHTML = `<tr><td colspan="6" class="table-empty">没有读取到赛程</td></tr>`;
+    return;
+  }
+
+  for (const fixture of fixtures) {
+    const tr = document.createElement("tr");
+    tr.className = fixture.status;
+    tr.dataset.id = fixture.id;
+    tr.innerHTML = `
+      <td>
+        <input class="fixture-check" type="checkbox" value="${fixture.id}" ${isPredictable(fixture) ? "checked" : ""} ${isPredictable(fixture) ? "" : "disabled"}>
+      </td>
+      <td>
+        <strong>${fixture.date}</strong>
+        <span>${fixture.time || "-"}</span>
+      </td>
+      <td>
+        <strong>${fixture.teamAZh} vs ${fixture.teamBZh}</strong>
+        <span>${fixture.teamA} vs ${fixture.teamB}</span>
+      </td>
+      <td>${fixture.group}</td>
+      <td><span class="status ${fixture.status}">${statusLabel(fixture.status, fixture)}</span></td>
+      <td>${fixture.city || fixture.stadium || "-"}</td>
+    `;
+    tr.addEventListener("click", (event) => {
+      if (event.target.matches("input")) return;
+      if (mode === "single" && isPredictable(fixture)) {
+        document.querySelectorAll(".fixture-check").forEach((item) => item.checked = false);
+        tr.querySelector(".fixture-check").checked = true;
+      }
+    });
+    body.appendChild(tr);
   }
 }
 
-function renderPrediction(prediction) {
-  currentPrediction = prediction;
-  $("emptyState").classList.add("hidden");
-  $("resultView").classList.remove("hidden");
+async function loadFixtures() {
+  const button = $("refreshFixtures");
+  try {
+    setBusy(button, true, "刷新中...");
+    const data = await postJson("/api/fixtures", {
+      date: $("fixtureDate").value,
+      window: Number($("fixtureWindow").value),
+      includeFinished: $("includeFinished").checked
+    });
+    fixtures = data.fixtures || [];
+    $("fixtureMeta").textContent = `已读取 ${fixtures.length} 场 · ${new Date(data.fetchedAt).toLocaleTimeString()}`;
+    renderFixtures();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(button, false);
+  }
+}
 
+function payloadBase() {
+  return {
+    apiKey: $("apiKey").value.trim(),
+    model: $("model").value.trim() || "deepseek-chat",
+    autoIntel: $("autoIntel").checked
+  };
+}
+
+function normalizePredictions(data) {
+  if (Array.isArray(data.prediction?.predictions)) return data.prediction.predictions;
+  if (data.prediction?.match) return [data.prediction];
+  return [];
+}
+
+async function generateBoard() {
+  const button = $("generateBoard");
+  try {
+    const matches = selectedFixtures();
+    if (!matches.length) throw new Error("没有选中可预测比赛。已完赛和进行中默认不会纳入预测。");
+    const limited = mode === "single" ? matches.slice(0, 1) : matches.slice(0, 10);
+    setBusy(button, true, $("autoIntel").checked ? "抓情报并生成..." : "生成中...");
+    const data = await postJson("/api/predict-fixtures", {
+      ...payloadBase(),
+      matches: limited
+    });
+    predictions = normalizePredictions(data);
+    renderPredictions(predictions);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
+function predictionCard(prediction, index) {
   const match = prediction.match || {};
   const probs = prediction.modelAdjusted || {};
   const safe = prediction.safestDirection || {};
   const parlay = prediction.parlaySafety || {};
-  const teamA = match.teamA || "队伍 A";
-  const teamB = match.teamB || "队伍 B";
-  const a = Number(probs.teamAWin || 0);
-  const d = Number(probs.draw || 0);
-  const b = Number(probs.teamBWin || 0);
-
-  $("matchMeta").textContent = `${match.stage || "未知阶段"} · ${match.group || "未知小组"} · ${match.kickoffBeijing || "未知时间"}`;
-  $("matchTitle").textContent = `${teamA} vs ${teamB}`;
-  $("gradeBadge").textContent = `等级 ${parlay.grade || "-"}`;
-  $("gradeBadge").className = `grade-badge grade-${String(parlay.grade || "").toLowerCase()}`;
-
-  const bar = document.querySelector(".probability-bar");
-  bar.style.setProperty("--a", Math.max(a, 4) + "fr");
-  bar.style.setProperty("--d", Math.max(d, 4) + "fr");
-  bar.style.setProperty("--b", Math.max(b, 4) + "fr");
-  $("probA").textContent = `${teamA} ${a}%`;
-  $("probDraw").textContent = `平 ${d}%`;
-  $("probB").textContent = `${teamB} ${b}%`;
-  $("probLabels").innerHTML = `
-    <span>${teamA}胜：${a}%</span>
-    <span>平局：${d}%</span>
-    <span>${teamB}胜：${b}%</span>
-  `;
-
-  $("safePick").textContent = safe.pick || "-";
-  $("safeReason").textContent = safe.reason || "";
-  $("passFlag").textContent = prediction.passRecommended ? "建议 PASS" : "可继续评估";
-  $("passNote").textContent = prediction.passRecommended
-    ? "不建议纳入组合，只适合单场讨论或等待更多实时信息。"
-    : "仍需核对首发、伤停和市场基线后再判断。";
-  $("legsText").textContent = `2关 ${legLabel(parlay.twoLeg)} · 3关 ${legLabel(parlay.threeLeg)} · 4关 ${legLabel(parlay.fourLeg)}`;
-  $("legsNote").textContent = parlay.ruleNote || "组合关卡只做风险分层，不保证结果。";
-
-  renderList($("riskFlags"), prediction.riskFlags || [], "chip-list");
-  renderList($("keyFactors"), prediction.keyFactors || [], "plain-list");
-  $("analysisText").textContent = prediction.analysis || "";
-}
-
-function legLabel(value) {
-  return {
-    core: "核心",
-    helper: "辅助",
-    avoid: "避开"
-  }[value] || "-";
-}
-
-async function predict() {
-  const button = $("predictBtn");
-  try {
-    setBusy(button, true, "生成中...");
-    const payload = formPayload();
-    const data = await postJson("/api/predict", payload);
-    const prediction = pickPrediction(data);
-    if (!prediction?.modelAdjusted) throw new Error("模型返回结构不完整。");
-    renderPrediction(prediction);
-  } catch (error) {
-    showToast(error.message);
-  } finally {
-    setBusy(button, false);
-  }
-}
-
-function batchItem(prediction) {
-  const match = prediction.match || {};
-  const parlay = prediction.parlaySafety || {};
-  const safe = prediction.safestDirection || {};
-  const div = document.createElement("div");
-  div.className = "batch-item";
+  const div = document.createElement("article");
+  div.className = `prediction-card grade-${String(parlay.grade || "").toLowerCase()}`;
+  div.tabIndex = 0;
   div.innerHTML = `
-    <strong>${match.teamA || "-"} vs ${match.teamB || "-"}</strong>
-    <div>方向：${safe.pick || "-"} · 等级：${parlay.grade || "-"} · PASS：${prediction.passRecommended ? "是" : "否"}</div>
-    <div>2关 ${legLabel(parlay.twoLeg)} / 3关 ${legLabel(parlay.threeLeg)} / 4关 ${legLabel(parlay.fourLeg)}</div>
+    <div class="card-head">
+      <div>
+        <span>${match.stage || "小组赛"} · ${match.group || "-"}</span>
+        <h3>${match.teamA || "-"} vs ${match.teamB || "-"}</h3>
+      </div>
+      <strong>等级 ${parlay.grade || "-"}</strong>
+    </div>
+    <div class="mini-probs">
+      <span>${probs.teamAWin ?? "-"}%</span>
+      <span>平 ${probs.draw ?? "-"}%</span>
+      <span>${probs.teamBWin ?? "-"}%</span>
+    </div>
+    <div class="card-grid">
+      <div><span>方向</span><strong>${safe.pick || "-"}</strong></div>
+      <div><span>PASS</span><strong>${prediction.passRecommended ? "是" : "否"}</strong></div>
+      <div><span>2/3/4关</span><strong>${legLabel(parlay.twoLeg)} / ${legLabel(parlay.threeLeg)} / ${legLabel(parlay.fourLeg)}</strong></div>
+    </div>
+    <p>${prediction.analysis || safe.reason || ""}</p>
+    <ul>${(prediction.riskFlags || []).slice(0, 4).map((item) => `<li>${item}</li>`).join("")}</ul>
   `;
+  div.addEventListener("click", () => {
+    currentPrediction = prediction;
+    document.querySelectorAll(".prediction-card").forEach((item) => item.classList.remove("selected"));
+    div.classList.add("selected");
+    $("outputMeta").textContent = `已选择第 ${index + 1} 场作为复盘对象。`;
+  });
   return div;
 }
 
-async function batchPredict() {
-  const button = $("batchBtn");
-  try {
-    setBusy(button, true, "批量生成中...");
-    const data = await postJson("/api/batch", {
-      apiKey: $("apiKey").value.trim(),
-      model: $("model").value.trim() || "deepseek-chat",
-      matches: $("batchMatches").value,
-      realtime: $("realtime").value.trim()
-    });
-    const predictions = data.prediction?.predictions || [];
-    $("batchResults").innerHTML = "";
-    for (const item of predictions) $("batchResults").appendChild(batchItem(item));
-    if (!predictions.length) showToast("模型没有返回 predictions 数组。");
-  } catch (error) {
-    showToast(error.message);
-  } finally {
-    setBusy(button, false);
+function renderPredictions(items) {
+  $("emptyState").classList.add("hidden");
+  $("boardResults").classList.remove("hidden");
+  $("boardResults").innerHTML = "";
+  if (!items.length) {
+    $("boardResults").innerHTML = `<div class="table-empty">模型没有返回 predictions 数组。</div>`;
+    return;
   }
+  items.forEach((item, index) => $("boardResults").appendChild(predictionCard(item, index)));
+  currentPrediction = items[0];
+  $("outputMeta").textContent = `已生成 ${items.length} 场；点击卡片可做赛后复盘。`;
+  document.querySelector(".prediction-card")?.classList.add("selected");
 }
 
 async function review() {
   if (!currentPrediction) {
-    showToast("请先生成一场预测。");
+    showToast("请先生成预测并选择一张卡片。");
     return;
   }
   try {
@@ -179,10 +210,10 @@ async function review() {
     const data = await postJson("/api/review", { prediction: currentPrediction, actualScore });
     const r = data.review;
     $("reviewOutput").innerHTML = `
-      <div class="review-stat"><span>胜平负命中</span><strong>${r.outcomeHit ? "命中" : "未命中"}</strong></div>
+      <div class="review-stat"><span>胜平负</span><strong>${r.outcomeHit ? "命中" : "未命中"}</strong></div>
       <div class="review-stat"><span>最稳方向</span><strong>${r.safestDirectionHit === null ? "需人工判定" : r.safestDirectionHit ? "命中" : "未命中"}</strong></div>
-      <div class="review-stat"><span>Brier Score</span><strong>${r.brierScore}</strong></div>
-      <div class="review-stat"><span>修正建议</span><strong>${r.nextAdjustmentSuggestion}</strong></div>
+      <div class="review-stat"><span>Brier</span><strong>${r.brierScore}</strong></div>
+      <div class="review-stat wide"><span>修正建议</span><strong>${r.nextAdjustmentSuggestion}</strong></div>
     `;
   } catch (error) {
     showToast(error.message);
@@ -192,38 +223,56 @@ async function review() {
 async function health() {
   try {
     const data = await postJson("/api/health", {});
+    hasServerApiKey = Boolean(data.hasServerApiKey);
     $("serverStatus").textContent = data.hasServerApiKey ? "已配置 Key" : "需输入 Key";
   } catch {
     $("serverStatus").textContent = "连接失败";
   }
 }
 
-function bindTabs() {
-  document.querySelectorAll(".tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach((item) => item.classList.remove("active"));
-      tab.classList.add("active");
-      $(`tab-${tab.dataset.tab}`).classList.add("active");
+function bindControls() {
+  document.querySelectorAll(".segment").forEach((button) => {
+    button.addEventListener("click", () => {
+      mode = button.dataset.mode;
+      document.querySelectorAll(".segment").forEach((item) => item.classList.remove("active"));
+      button.classList.add("active");
+      if (mode === "single") {
+        const first = document.querySelector(".fixture-check:not(:disabled)");
+        document.querySelectorAll(".fixture-check").forEach((item) => item.checked = false);
+        if (first) first.checked = true;
+      } else {
+        document.querySelectorAll(".fixture-check:not(:disabled)").forEach((item) => item.checked = true);
+      }
     });
+  });
+
+  $("settingsBtn").addEventListener("click", () => $("settingsPanel").classList.toggle("hidden"));
+  $("refreshFixtures").addEventListener("click", loadFixtures);
+  $("fixtureDate").addEventListener("change", loadFixtures);
+  $("fixtureWindow").addEventListener("change", loadFixtures);
+  $("includeFinished").addEventListener("change", loadFixtures);
+  $("generateBoard").addEventListener("click", generateBoard);
+  $("reviewBtn").addEventListener("click", review);
+  $("clearResults").addEventListener("click", () => {
+    predictions = [];
+    currentPrediction = null;
+    $("boardResults").innerHTML = "";
+    $("boardResults").classList.add("hidden");
+    $("emptyState").classList.remove("hidden");
+    $("outputMeta").textContent = "选择比赛后生成，批量模式会输出整张表。";
+  });
+  $("selectVisible").addEventListener("click", () => {
+    document.querySelectorAll(".fixture-check:not(:disabled)").forEach((item) => item.checked = true);
   });
 }
 
-function fillSample() {
-  $("group").value = "H";
-  $("kickoff").value = "2026-06-16 00:00";
-  $("teamA").value = "西班牙";
-  $("teamB").value = "佛得角";
-  $("realtime").value = "未提供首发、伤停、市场基线、天气。请按缺少关键实时数据处理，必须考虑 PASS。";
-}
-
-document.addEventListener("DOMContentLoaded", () => {
-  bindTabs();
-  $("predictBtn").addEventListener("click", predict);
-  $("batchBtn").addEventListener("click", batchPredict);
-  $("reviewBtn").addEventListener("click", review);
-  $("fillSample").addEventListener("click", fillSample);
-  fillSample();
-  health();
+document.addEventListener("DOMContentLoaded", async () => {
+  bindControls();
+  await health();
+  await loadFixtures();
+  if (hasServerApiKey && fixtures.some(isPredictable)) {
+    didAutoGenerate = true;
+    await generateBoard();
+  }
   if (window.lucide) window.lucide.createIcons();
 });

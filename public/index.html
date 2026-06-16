@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>绿茵神算 · 风险分层工具</title>
+    <title>绿茵神算 · 赛事预测看板</title>
     <link rel="stylesheet" href="/styles.css">
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
     <script src="/app.js" defer></script>
@@ -12,181 +12,143 @@
     <main class="app-shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">WorldCup 2026 Prediction Skill</p>
-          <h1>绿茵神算风险分层工具</h1>
+          <p class="eyebrow">FIFA World Cup 2026</p>
+          <h1>赛事预测看板</h1>
         </div>
-        <div class="status-pill" id="serverStatus">连接中</div>
+        <div class="top-actions">
+          <button class="ghost-button" id="settingsBtn" type="button">
+            <i data-lucide="settings"></i>
+            设置
+          </button>
+          <div class="status-pill" id="serverStatus">连接中</div>
+        </div>
       </header>
 
-      <section class="tool-grid">
-        <aside class="panel input-panel">
+      <section class="control-strip">
+        <div class="segmented" aria-label="预测模式">
+          <button class="segment active" data-mode="batch" type="button">批量整表</button>
+          <button class="segment" data-mode="single" type="button">单场详情</button>
+        </div>
+
+        <label class="compact-field">
+          日期
+          <input id="fixtureDate" type="date" value="2026-06-16">
+        </label>
+
+        <label class="compact-field">
+          范围
+          <select id="fixtureWindow">
+            <option value="1">当天</option>
+            <option value="2">未来 2 天</option>
+            <option value="3">未来 3 天</option>
+            <option value="7">未来 7 天</option>
+          </select>
+        </label>
+
+        <label class="toggle-field">
+          <input id="includeFinished" type="checkbox">
+          <span>包含已完赛</span>
+        </label>
+
+        <label class="toggle-field">
+          <input id="autoIntel" type="checkbox" checked>
+          <span>自动抓取情报</span>
+        </label>
+
+        <button class="secondary-button" id="refreshFixtures" type="button">
+          <i data-lucide="refresh-cw"></i>
+          刷新赛程
+        </button>
+
+        <button class="primary-button" id="generateBoard" type="button">
+          <i data-lucide="sparkles"></i>
+          生成当前表
+        </button>
+      </section>
+
+      <section class="settings-panel hidden" id="settingsPanel">
+        <label>
+          API Key
+          <input id="apiKey" type="password" autocomplete="off" placeholder="可留空：使用启动时的 DEEPSEEK_API_KEY">
+        </label>
+        <label>
+          模型
+          <input id="model" value="deepseek-chat">
+        </label>
+        <p>页面不保存 API Key；如果粘贴 Key，只会发给本机后端用于本次调用。</p>
+      </section>
+
+      <section class="dashboard-grid">
+        <section class="panel fixtures-panel">
           <div class="panel-header">
-            <h2>赛前输入</h2>
-            <button class="icon-button" type="button" id="fillSample" title="填入示例">
-              <i data-lucide="wand-2"></i>
+            <div>
+              <h2>官方赛程</h2>
+              <p id="fixtureMeta">正在读取 FIFA 赛程</p>
+            </div>
+            <button class="ghost-button" id="selectVisible" type="button">
+              <i data-lucide="check-square"></i>
+              全选可预测
             </button>
           </div>
 
-          <div class="settings">
-            <label>
-              API Key
-              <input id="apiKey" type="password" autocomplete="off" placeholder="可留空：使用启动时的 DEEPSEEK_API_KEY">
-            </label>
-            <div class="field-row">
-              <label>
-                模型
-                <input id="model" value="deepseek-chat">
-              </label>
-              <label>
-                阶段
-                <select id="stage">
-                  <option>小组赛</option>
-                  <option>32 强</option>
-                  <option>16 强</option>
-                  <option>8 强</option>
-                  <option>半决赛</option>
-                  <option>决赛</option>
-                </select>
-              </label>
+          <div class="fixture-table-wrap">
+            <table class="fixture-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>时间</th>
+                  <th>比赛</th>
+                  <th>小组</th>
+                  <th>状态</th>
+                  <th>场地</th>
+                </tr>
+              </thead>
+              <tbody id="fixturesBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel output-panel">
+          <div class="panel-header">
+            <div>
+              <h2>预测结果</h2>
+              <p id="outputMeta">选择比赛后生成，批量模式会输出整张表。</p>
             </div>
+            <button class="ghost-button" id="clearResults" type="button">
+              <i data-lucide="trash-2"></i>
+              清空
+            </button>
           </div>
 
-          <div class="field-row">
-            <label>
-              小组
-              <input id="group" placeholder="H">
-            </label>
-            <label>
-              开球时间
-              <input id="kickoff" placeholder="2026-06-16 00:00">
-            </label>
+          <div class="empty-state" id="emptyState">
+            <i data-lucide="table-2"></i>
+            <h2>等待生成赛事表</h2>
+            <p>默认会自动加载 FIFA 官方赛程。你只需要选单场或批量，然后点生成。</p>
           </div>
 
-          <div class="field-row">
-            <label>
-              主队 / 队伍 A
-              <input id="teamA" placeholder="西班牙">
-            </label>
-            <label>
-              客队 / 队伍 B
-              <input id="teamB" placeholder="佛得角">
-            </label>
-          </div>
-
-          <label>
-            实时信息
-            <textarea id="realtime" rows="7" placeholder="粘贴首发、伤停、天气、市场隐含概率、临场新闻。没有就留空，系统会自动降置信并考虑 PASS。"></textarea>
-          </label>
-
-          <button class="primary-button" id="predictBtn" type="button">
-            <i data-lucide="play"></i>
-            生成风险分析
-          </button>
-        </aside>
-
-        <section class="workspace">
-          <nav class="tabs" aria-label="视图切换">
-            <button class="tab active" data-tab="result">单场结果</button>
-            <button class="tab" data-tab="batch">批量预测</button>
-            <button class="tab" data-tab="review">赛后复盘</button>
-          </nav>
-
-          <section class="panel tab-panel active" id="tab-result">
-            <div class="empty-state" id="emptyState">
-              <i data-lucide="scan-line"></i>
-              <h2>还没有预测结果</h2>
-              <p>填一场比赛后点击生成。结果会优先展示方向、PASS、组合风险和主要风险点。</p>
-            </div>
-            <div class="result-view hidden" id="resultView">
-              <div class="match-line">
-                <div>
-                  <p class="eyebrow" id="matchMeta"></p>
-                  <h2 id="matchTitle"></h2>
-                </div>
-                <div class="grade-badge" id="gradeBadge">-</div>
-              </div>
-
-              <div class="probability-bar" aria-label="胜平负概率">
-                <div class="prob home" id="probA"></div>
-                <div class="prob draw" id="probDraw"></div>
-                <div class="prob away" id="probB"></div>
-              </div>
-              <div class="probability-labels" id="probLabels"></div>
-
-              <div class="summary-grid">
-                <div class="summary-block">
-                  <span>最稳方向</span>
-                  <strong id="safePick">-</strong>
-                  <p id="safeReason"></p>
-                </div>
-                <div class="summary-block">
-                  <span>PASS</span>
-                  <strong id="passFlag">-</strong>
-                  <p id="passNote"></p>
-                </div>
-                <div class="summary-block">
-                  <span>2 / 3 / 4 关</span>
-                  <strong id="legsText">-</strong>
-                  <p id="legsNote"></p>
-                </div>
-              </div>
-
-              <div class="content-columns">
-                <section>
-                  <h3>风险点</h3>
-                  <ul class="chip-list" id="riskFlags"></ul>
-                </section>
-                <section>
-                  <h3>关键因素</h3>
-                  <ul class="plain-list" id="keyFactors"></ul>
-                </section>
-              </div>
-
-              <section class="analysis-box">
-                <h3>分析</h3>
-                <p id="analysisText"></p>
-              </section>
-            </div>
-          </section>
-
-          <section class="panel tab-panel" id="tab-batch">
-            <div class="panel-header">
-              <h2>批量预测</h2>
-              <button class="secondary-button" id="batchBtn" type="button">
-                <i data-lucide="list-checks"></i>
-                批量生成
-              </button>
-            </div>
-            <textarea id="batchMatches" class="batch-input" rows="9">H组 西班牙 vs 佛得角，开球北京时间 2026-06-16 00:00。未提供首发、伤停、市场基线、天气。
-G组 比利时 vs 埃及，开球北京时间 2026-06-16 03:00。未提供首发、伤停、市场基线、天气。
-H组 沙特 vs 乌拉圭，开球北京时间 2026-06-16 06:00。未提供首发、伤停、市场基线、天气。</textarea>
-            <div class="batch-results" id="batchResults"></div>
-          </section>
-
-          <section class="panel tab-panel" id="tab-review">
-            <div class="review-layout">
-              <div>
-                <h2>赛后复盘</h2>
-                <p class="muted">先生成一场预测，再填写实际比分。工具会计算胜平负命中、最稳方向命中和 Brier Score。</p>
-              </div>
-              <div class="review-form">
-                <label>
-                  实际比分
-                  <input id="actualScore" placeholder="1-1">
-                </label>
-                <button class="secondary-button" id="reviewBtn" type="button">
-                  <i data-lucide="calculator"></i>
-                  计算复盘
-                </button>
-              </div>
-            </div>
-            <div class="review-output" id="reviewOutput"></div>
-          </section>
+          <div class="board-results hidden" id="boardResults"></div>
         </section>
       </section>
 
+      <section class="panel review-panel">
+        <div class="panel-header">
+          <div>
+            <h2>赛后复盘</h2>
+            <p>点任意预测卡片设为复盘对象，再填实际比分。</p>
+          </div>
+          <div class="review-form">
+            <input id="actualScore" placeholder="实际比分，如 1-1">
+            <button class="secondary-button" id="reviewBtn" type="button">
+              <i data-lucide="calculator"></i>
+              计算
+            </button>
+          </div>
+        </div>
+        <div class="review-output" id="reviewOutput"></div>
+      </section>
+
       <footer class="footer-note">
-        仅供娱乐和球迷讨论。页面不保存 API Key；如果你在输入框粘贴 Key，只会发给本机后端用于本次调用。
+        数据源：FIFA 官方赛程页 + FIFA 单场页自动摘要。若首发、伤停或市场基线没有公开抓到，系统会降置信或 PASS。
       </footer>
     </main>
   </body>
