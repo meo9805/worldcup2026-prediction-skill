@@ -4,8 +4,8 @@
 
 ### 绿茵神算 · 2026 FIFA World Cup AI Prediction Engine
 
-**一份 system prompt,把任意大模型驯成专业世界杯预测引擎**
-*Turn any LLM into a deterministic World Cup prediction engine with one prompt.*
+**一份 system prompt,把任意大模型驯成可复盘的世界杯风险分层引擎**
+*Turn any LLM into a calibrated World Cup prediction and review engine with one prompt.*
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-brightgreen.svg?style=flat-square)](LICENSE)
 [![Skill Version](https://img.shields.io/badge/skill-v1.0-blue.svg?style=flat-square)](skill.md)
@@ -60,9 +60,12 @@
 |:---|:---|
 | 🎯 **零依赖** | 单文件 `skill.md`,无需训练、无需向量库、无需 API server |
 | 🧱 **资料锁死** | 48 队完整资料库写在 prompt 内,模型只许引用 / 不许编造 |
-| 📐 **方法论固化** | 4 维评估权重 + 胜率上限 85% 铁律,杜绝"凭感觉胡说" |
+| 📐 **方法论固化** | 实时数据检查 + 市场基线 + 平局校准 + 胜率上限,杜绝"凭感觉胡说" |
 | 📦 **严格 JSON** | 输出格式锁死,前端可直接渲染,零后处理 |
 | 🔄 **可热更新** | 末尾"每日情报区"为动态注入位,30 行更新 → 全 Skill 即时跟进 |
+| 🧭 **最稳方向** | 输出 safestDirection,从胜平负升级为风险更低的方向选择 |
+| 🧩 **组合关卡分级** | A/B/C/D 标记 2/3/4 关适用性,缺数据时主动 PASS |
+| 📉 **赛后回测** | 内置 Brier Score、错因分类、下一场修正字段 |
 | 🌍 **多模型通用** | 任意 OpenAI 兼容接口即贴即用(DeepSeek / Qwen / GPT / Claude) |
 | 🛡️ **内置红线** | 拒绝任何投注 / 赔率 / 下注建议,娱乐讨论场景安全 |
 | 📊 **可视化友好** | JSON 字段映射设计已对前端卡片组件优化 |
@@ -120,11 +123,11 @@
        │     └─ 隐忧 + 历史底蕴          │
        │                                 │
        │  ② 方法论 ─ Methodology         │
-       │     ├─ 近期状态  ████████  40%  │
-       │     ├─ 硬实力    ██████    30%  │
-       │     ├─ 历史交锋  ███       15%  │
-       │     ├─ 情境因素  ███       15%  │
-       │     └─ 🚫 胜率硬上限 ≤ 85%      │
+       │     ├─ 赛前实时数据检查          │
+       │     ├─ 市场概率 baseline         │
+       │     ├─ 强制平局校准              │
+       │     ├─ PASS 机制                 │
+       │     └─ 组合关卡 A/B/C/D 分级     │
        │                                 │
        │  ③ 输出契约 ─ Output Schema     │
        │     └─ JSON · 字段固定 · 总和=100│
@@ -157,12 +160,13 @@
 
 | 维度 | 权重 | 涵盖内容 |
 |:---|:---:|:---|
-| 近期状态 | **40%** | 预选赛表现 · 大赛成绩 · 核心球员状态与伤病 |
-| 球队硬实力 | **30%** | 阵容厚度 · 世界排名档位 · 历史大赛底蕴 |
-| 历史交锋 | **15%** | 两队过往交手记录(允许常识补充 / 必须标注不确定) |
-| 情境因素 | **15%** | 东道主主场 · 气候 · 抗压经验 · 阵容年龄 |
+| 近期状态 | **30%** | 预选赛表现 · 大赛成绩 · 核心球员状态与伤病 |
+| 球队硬实力 | **25%** | 阵容厚度 · 世界排名档位 · 历史大赛底蕴 |
+| 临场信息 | **20%** | 首发 · 伤停 · 轮换 · 天气 · 旅行 · 体能 |
+| 市场基线 | **15%** | 公开市场隐含概率,缺失则强制降置信 |
+| 对位与情境 | **10%** | 低位防守 · 风格克制 · 东道主 · 抗压经验 |
 
-> ⚠️ **铁律:实力悬殊也不得给出超过 85% 的胜率(足球有偶然性 — 2022 沙特 vs 阿根廷)**
+> ⚠️ **铁律:没有首发、伤停、市场基线时,不得输出高置信度。小组赛首轮必须抬高平局和 PASS 权重。**
 
 #### Layer 3 · 输出契约
 
@@ -260,21 +264,66 @@ export async function predict(teamA: string, teamB: string, stage = "小组赛")
 
 ```json
 {
-  "teamA":           { "name": "墨西哥", "winProb": 70 },
-  "draw":            20,
-  "teamB":           { "name": "南非",   "winProb": 10 },
-  "predictedScore":  "2-0",
-  "confidence":      "高",
-  "keyFactors":      [
-    "阿兹特克主场揭幕战气势如虹",
-    "墨西哥金杯冠军班底实力碾压",
-    "南非时隔16年重返经验不足"
+  "match": {
+    "stage": "小组赛",
+    "group": "H",
+    "teamA": "西班牙",
+    "teamB": "佛得角",
+    "kickoffBeijing": "2026-06-16 00:00"
+  },
+  "dataStatus": {
+    "lineups": "missing",
+    "injuries": "partial",
+    "market": "missing",
+    "weather": "missing",
+    "overallCompleteness": "low",
+    "missingCriticalData": ["首发", "市场基线", "天气"]
+  },
+  "marketBaseline": {
+    "source": "missing",
+    "teamAWin": 0,
+    "draw": 0,
+    "teamBWin": 0,
+    "notes": "未提供公开市场隐含概率,不得编造"
+  },
+  "modelAdjusted": {
+    "teamAWin": 64,
+    "draw": 26,
+    "teamBWin": 10
+  },
+  "safestDirection": {
+    "type": "double_chance",
+    "pick": "西班牙不败",
+    "estimatedHitRate": 82,
+    "reason": "实力优势明显,但首轮破低位存在平局风险",
+    "avoid": ["西班牙大胜", "精确比分", "深让方向"]
+  },
+  "parlaySafety": {
+    "grade": "B",
+    "twoLeg": "helper",
+    "threeLeg": "helper",
+    "fourLeg": "avoid",
+    "ruleNote": "组合关卡只做风险分层,不保证结果"
+  },
+  "passRecommended": false,
+  "predictedScoreReference": ["1-0", "1-1"],
+  "confidence": "中",
+  "riskFlags": ["小组赛首轮", "弱队低位", "缺少首发"],
+  "keyFactors": ["实力差明显", "首轮慢热", "低位风险"],
+  "analysis": "西班牙纸面优势明显,但首轮面对新军低位防守时,控场不等于能快速破门。更稳方向应降低对大胜的期待。",
+  "playersToWatch": [
+    { "team": "西班牙", "player": "亚马尔", "reason": "边路突破是破密集关键" },
+    { "team": "佛得角", "player": "Vozinha", "reason": "门将表现可能决定下限" }
   ],
-  "analysis":        "东道主墨西哥在阿兹特克球场迎战南非,实力与主场优势明显……",
-  "playersToWatch":  [
-    { "team": "墨西哥", "player": "圣地亚哥·希门尼斯", "reason": "米兰前锋状态火热" },
-    { "team": "南非",   "player": "佩西·塔乌",         "reason": "南非进攻核心,肩负爆冷希望" }
-  ]
+  "postmatchReviewTemplate": {
+    "actualResult": "赛后填写",
+    "outcomeHit": null,
+    "safestDirectionHit": null,
+    "brierScore": null,
+    "failureReason": ["赛后填写"],
+    "nextAdjustment": "赛后填写成可执行规则"
+  },
+  "disclaimer": "仅供娱乐和球迷讨论,不构成任何投注、下注、赔率或收益建议。"
 }
 ```
 
@@ -282,13 +331,14 @@ export async function predict(teamA: string, teamB: string, stage = "小组赛")
 
 | 字段 | 类型 | 约束 | 备注 |
 |:---|:---:|:---|:---|
-| `teamA.name` / `teamB.name` | `string` | 中文队名 | 必须与资料库一致 |
-| `teamA.winProb` / `teamB.winProb` / `draw` | `int` | `0 ≤ x ≤ 85` | **三者总和 == 100** |
-| `predictedScore` | `string` | `^\d{1,2}-\d{1,2}$` | e.g. `"2-0"` |
-| `confidence` | `enum` | `高 / 中 / 低` | 三选一 |
-| `keyFactors` | `string[]` | **3 ≤ len ≤ 5** · 每条 ≤ 15 字 | 关键判断依据 |
-| `analysis` | `string` | ≤ 150 字 | 专业解说式分析 |
-| `playersToWatch` | `object[]` | **len == 2** · 每队 1 人 | 关键先生推荐 |
+| `modelAdjusted.*` | `int` | 三项总和必须 100 | 胜平负校准概率 |
+| `dataStatus.*` | `object` | 必须说明实时数据缺失项 | 缺关键数据不得高置信 |
+| `marketBaseline.*` | `object` | 无市场数据填 0 + `missing` | 不得编造赔率/市场概率 |
+| `safestDirection` | `object` | 必须输出 | 相对最稳方向,不是保证 |
+| `parlaySafety.grade` | `enum` | `A/B/C/D` | 2/3/4 关风险分层 |
+| `passRecommended` | `bool` | 风险高时必须 true | 主动拒绝强判 |
+| `predictedScoreReference` | `string[]` | 1~3 个 | 仅娱乐参考 |
+| `postmatchReviewTemplate` | `object` | 必须输出 | 赛后回测和升级 |
 
 ### 阶段(stage)取值
 
@@ -381,10 +431,12 @@ export async function predict(teamA: string, teamB: string, stage = "小组赛")
 - [x] **v1.0** — 48 队完整资料库 + 4 层约束 + 严格 JSON
 - [x] **v1.0** — DeepSeek / Qwen / GPT / Claude 全模型适配
 - [x] **v1.0** — 在线 Demo 站(worldcup.youliaoyun.com)
+- [x] **v1.1** — 最稳方向 + 组合关卡 A/B/C/D 风险分层
+- [x] **v1.1** — 强制平局校准 + PASS 机制 + 赛后 Brier Score 回测模板
 - [ ] **v1.1** — 每日情报区自动化更新 GitHub Action
 - [ ] **v1.1** — 英文版 `skill.en.md`
 - [ ] **v1.2** — 球员级别预测(进球者 / MVP / 黄牌)
-- [ ] **v1.2** — 赛后回测脚本(对照实际结果统计命中率)
+- [ ] **v1.2** — 赛后回测脚本(自动计算 Brier Score 和错因分布)
 - [ ] **v2.0** — 升级为 Skill Pack:把方法论抽象为可复用的"赛事预测 Skill 模板",支持欧洲杯 / 奥运 / NBA
 
 ---
@@ -403,10 +455,10 @@ export async function predict(teamA: string, teamB: string, stage = "小组赛")
 <details>
 <summary><b>Q2: 预测准确率有多高?会不会瞎说?</b></summary>
 
-本 Skill 通过四层约束**大幅降低**瞎说概率,但**不保证**比赛结果——足球本身的偶然性谁都消不掉。
-我们刻意把胜率上限锁在 85%,就是为了承认"再悬殊也可能爆冷"(沙特 vs 阿根廷)。
+本 Skill 通过实时数据检查、市场基线、平局校准、PASS 机制和赛后回测**大幅降低**瞎说概率,但**不保证**比赛结果——足球本身的偶然性谁都消不掉。
+我们刻意限制强队胜率、降低精确比分权重,就是为了承认"再悬殊也可能爆冷或打平"。
 
-**这是娱乐和讨论工具,不是先知。**
+**这是娱乐和讨论工具,不是先知。真正要优化,必须持续做赛后复盘。**
 </details>
 
 <details>
